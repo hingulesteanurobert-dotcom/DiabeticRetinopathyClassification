@@ -25,7 +25,7 @@ Three datasets from the Kaggle platform were analyzed, and an optimal set of res
 3. Preprocessed EyePACS
 
 <img width="555" height="486" alt="image" src="https://github.com/user-attachments/assets/4cdffab5-912f-4fed-8fb0-c7a184d3c1b8" />
-<img width="947" height="1166" alt="Untitled" src="https://github.com/user-attachments/assets/64bacae8-4c53-4c9f-bdb7-3a1fa9f6c0d6" />
+<img width="555" height="478" alt="Untitled" src="https://github.com/user-attachments/assets/64bacae8-4c53-4c9f-bdb7-3a1fa9f6c0d6" />
 
 
 
