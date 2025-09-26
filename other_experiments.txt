@@ -1,0 +1,335 @@
+#Impartirea datelor in train, val, test pentru primul dataset (toate experimentele)
+
+import os
+import shutil
+from sklearn.model_selection import train_test_split
+import random
+
+def count_images_in_subdirs(directory):
+    class_counts = {}
+    for class_name in os.listdir(directory):
+        class_path = os.path.join(directory, class_name)
+        if os.path.isdir(class_path):
+            class_counts[class_name] = len(os.listdir(class_path))
+    return class_counts
+    
+dataset_dir = '/kaggle/input/diabetic-retinopathy-resized-arranged'
+train_dir = '/kaggle/working/train'
+test_dir = '/kaggle/working/test'
+val_dir = "/kaggle/working/validation"
+
+os.makedirs(train_dir, exist_ok=True)
+os.makedirs(test_dir, exist_ok=True)
+os.makedirs(val_dir, exist_ok=True)
+
+train_ratio = 0.7
+test_ratio = 0.15
+val_ratio = 0.15
+
+for class_name in os.listdir(dataset_dir):
+    class_path = os.path.join(dataset_dir, class_name)
+    if os.path.isdir(class_path):
+        images = os.listdir(class_path)
+        random.shuffle(images) 
+        
+        total_images = len(images)
+        train_count = int(total_images * train_ratio)
+        test_count = int(total_images * test_ratio)
+        val_count = total_images - train_count - test_count
+
+        class_train_dir = os.path.join(train_dir, class_name)
+        class_test_dir = os.path.join(test_dir, class_name)
+        class_val_dir = os.path.join(val_dir, class_name)
+        os.makedirs(class_train_dir, exist_ok=True)
+        os.makedirs(class_test_dir, exist_ok=True)
+        os.makedirs(class_val_dir, exist_ok=True)
+
+        for image in images[:train_count]:
+            shutil.copy(os.path.join(class_path, image), os.path.join(class_train_dir, image))
+        for image in images[train_count:train_count + test_count]:
+            shutil.copy(os.path.join(class_path, image), os.path.join(class_test_dir, image))
+        for image in images[train_count + test_count:]:
+            shutil.copy(os.path.join(class_path, image), os.path.join(class_val_dir, image))
+
+        print(f"Clasa {class_name}: {train_count} train, {test_count} test, {val_count} validation")
+
+train_counts = count_images_in_subdirs(train_dir)
+test_counts = count_images_in_subdirs(test_dir)
+val_counts = count_images_in_subdirs(val_dir)
+
+print("\nDistributia finala a imaginilor:")
+print("Train:", train_counts)
+print("Test:", test_counts)
+print("Validation:", val_counts)
+
+#Tehnici de preprocesare
+
+    #Functia de crop(folosita in majoritatea experimentelor)
+
+def crop_visible_area(image, thresh=7):
+    if image.ndim == 2:
+        mask = image > thresh
+        return image[np.ix_(mask.any(1), mask.any(0))]
+    elif image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        mask = gray > thresh
+        h = image[:, :, 0][np.ix_(mask.any(1), mask.any(0))].shape[0]
+        if h == 0:
+            return image
+        ch1 = image[:, :, 0][np.ix_(mask.any(1), mask.any(0))]
+        ch2 = image[:, :, 1][np.ix_(mask.any(1), mask.any(0))]
+        ch3 = image[:, :, 2][np.ix_(mask.any(1), mask.any(0))]
+        result = np.stack([ch1, ch2, ch3], axis=-1)
+        return result
+
+   
+    # Crop + gaussian blur(experimentul 1 si 3 dataset 1)
+    
+def circular_focus(image, sigma=30):
+    image = crop_visible_area(image)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    h, w, _ = image.shape
+    cx, cy = w // 2, h // 2
+    radius = min(cx, cy)
+
+    mask = np.zeros((h, w), np.uint8)
+    cv2.circle(mask, (cx, cy), radius, 1, thickness=-1)
+    masked = cv2.bitwise_and(image, image, mask=mask)
+    masked = crop_visible_area(masked)
+    result = cv2.addWeighted(masked, 4, cv2.GaussianBlur(masked, (0, 0), sigma), -4, 128)
+    return result
+        
+
+    #CLAHE(experimentul 3 dataset 1)
+    
+    def enhance_clahe(image):
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_clahe = clahe.apply(l)
+    final = cv2.merge((l_clahe, a, b))
+    return cv2.cvtColor(final, cv2.COLOR_LAB2BGR)
+
+# Tehnici de echilibrare a datelor
+
+    #Undersampling (experimentul 1 dataset 1)
+
+import os
+import shutil
+import random
+
+train_dir = '/kaggle/working/train'
+test_dir = '/kaggle/working/test'
+val_dir = "/kaggle/working/validation"
+
+balanced_train_dir = "/kaggle/working/balanced_train"
+balanced_test_dir = "/kaggle/working/balanced_test"
+balanced_val_dir = "/kaggle/working/balanced_val"
+
+target_train = 496
+target_test = 106
+target_val = 106
+
+def balance_class_images(source_dir, target_dir, target_count):
+    images = os.listdir(source_dir)
+    os.makedirs(target_dir, exist_ok=True)
+
+    if len(images) > target_count:
+        selected_images = random.sample(images, target_count)
+    else:
+        selected_images = images
+        while len(selected_images) < target_count:
+            selected_images.extend(images)
+        selected_images = selected_images[:target_count]
+
+
+    for image in selected_images:
+        shutil.copy(os.path.join(source_dir, image), os.path.join(target_dir, image))
+
+for subset_dir, balanced_subset_dir, target_count in [
+    (train_dir, balanced_train_dir, target_train),
+    (test_dir, balanced_test_dir, target_test),
+    (val_dir, balanced_val_dir, target_val),
+]:
+    for class_name in os.listdir(subset_dir):
+        source_class_dir = os.path.join(subset_dir, class_name)
+        balanced_class_dir = os.path.join(balanced_subset_dir, class_name)
+        balance_class_images(source_class_dir, balanced_class_dir, target_count)
+print("Echilibrare completa.")
+
+
+#AUGMENTARE      
+
+    #ALBUMENTATIONS(experimentul 2 dataset 1)
+
+albumentations_aug = A.Compose([
+    A.HorizontalFlip(p=0.5),
+    A.VerticalFlip(p=0.5),
+    A.Rotate(limit=20, border_mode=cv2.BORDER_REFLECT_101, p=0.7),
+    A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=0, border_mode=cv2.BORDER_REFLECT_101, p=0.6),
+    A.RandomBrightnessContrast(p=0.4),
+    A.Blur(blur_limit=3, p=0.2),
+    A.Resize(IMG_SIZE, IMG_SIZE)
+])
+
+    #TorchiVision deja definit in Anexa A.
+
+#Restrangerea claselor - functie
+
+label_map = {
+    0: 0,  # No DR
+    1: 1,  # Early DR
+    2: 1,  # Early DR
+    3: 2,  # Advanced DR
+    4: 2   # Advanced DR
+}
+
+from torchvision.datasets import ImageFolder
+
+class RemappedImageFolder(ImageFolder):
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        target = label_map[target]
+        return sample, target
+
+
+
+#Incarcarea datelor 
+
+    #ImageDataGenerator(experimentul 1 dataset 1)
+
+#Variabilele difera de la caz la caz
+
+BATCH_SIZE = 32
+EPOCHS = 40
+WARMUP_EPOCHS = 3
+LEARNING_RATE = 1e-5
+WARMUP_LEARNING_RATE = 1e-4  
+HEIGHT = 224
+WIDTH = 224
+CANAL = 3
+N_CLASSES = 5
+ES_PATIENCE = 7
+RLROP_PATIENCE = 4
+DECAY_DROP = 0.5
+
+def img_generator(train_dir, test_dir, val_dir):
+
+    train_datagen = ImageDataGenerator(
+        rescale = 1./255,        
+        validation_split=0.2,    
+        horizontal_flip=True,     
+        preprocessing_function=tf.keras.applications.resnet50.preprocess_input
+    )
+    )
+    
+    
+    train_generator = train_datagen.flow_from_directory(
+        '/kaggle/working/preprocessed_train',     
+        target_size=(HEIGHT, WIDTH),  
+        batch_size=BATCH_SIZE,    
+        class_mode='categorical', 
+        subset='training', 
+
+    )
+    
+    valid_generator = train_datagen.flow_from_directory(
+        '/kaggle/working/preprocessed_train',     
+        target_size=(HEIGHT, WIDTH),
+        batch_size=BATCH_SIZE,
+        class_mode='categorical',
+        subset='validation',      
+
+    )
+    
+    test_datagen = ImageDataGenerator(rescale=1./255)  
+    
+    test_generator = test_datagen.flow_from_directory(
+        directory=test_dir,       
+        target_size=(HEIGHT, WIDTH),
+        batch_size=32,            
+        shuffle=False,          
+        class_mode='categorical'        
+    )
+    
+    return train_generator, valid_generator, test_generator
+
+train_dir = "/kaggle/working/preprocessed_train"
+test_dir = "/kaggle/working/preprocessed_test"   
+val_dir = "/kaggle/working/preprocessed_val"     
+train_gen, valid_gen, test_gen = img_generator(train_dir, test_dir, val_dir)
+
+#Modele de CNN (experimentele 1 si 2 dataset 1)
+
+    #ResNet50 cu diferite variatii
+
+def create_model(input_shape, n_out):
+    input_tensor = Input(shape=input_shape)
+    base_model = ResNet50(weights='imagenet', include_top=False, input_tensor=input_tensor)
+
+    # Feature extraction
+    x = GlobalAveragePooling2D()(base_model.output)
+    x = BatchNormalization()(x)  
+    x = Dropout(0.5)(x)  
+    x = Dense(2048, activation='relu', kernel_regularizer=l2(0.01))(x)
+    x = Dropout(0.5)(x)
+    final_output = Dense(n_out, activation='softmax', name = 'final_output')(x)
+
+    model = Model(inputs=input_tensor, outputs=final_output)
+
+    return model
+
+    #Variatia 2
+    
+base_model = ResNet50(
+    weights='imagenet',
+    include_top=False,
+    input_shape=(IMG_SIZE, IMG_SIZE, 3)
+)
+
+
+base_model.trainable = True
+for layer in base_model.layers[:-100]: 
+    layer.trainable = False
+
+x = GlobalAveragePooling2D()(base_model.output)
+x = Dropout(0.3)(x)
+x = Dense(512, activation='relu')(x)
+x = Dropout(0.3)(x)
+outputs = Dense(NUM_CLASSES, activation='softmax')(x)
+
+model = Model(inputs=base_model.input, outputs=outputs)
+    
+
+    #Antrenare ResNet50 (experimentul 2 dataset 1, exp 1 similar)
+
+model = create_model(input_shape=(HEIGHT, WIDTH, CANAL), n_out=N_CLASSES)
+
+for layer in model.layers:
+    layer.trainable = False
+
+for i in range(-5, 0):
+    model.layers[i].trainable = True
+model.summary()
+
+for layer in model.layers:
+    layer.trainable = True
+
+es = EarlyStopping(monitor='val_loss', mode='min', patience=ES_PATIENCE, restore_best_weights=True, verbose=1)
+rlrop = ReduceLROnPlateau(monitor='val_loss', mode='min', patience=RLROP_PATIENCE, factor=DECAY_DROP, min_lr=1e-6, verbose=1)
+
+callback_list = [es, rlrop]
+optimizer = optimizers.Adam(learning_rate=LEARNING_RATE)
+model.compile(optimizer=optimizer, loss="categorical_crossentropy",  metrics=['accuracy'])
+model.summary()
+
+history1 = model.fit(
+    train_gen,
+    validation_data=valid_gen,
+    epochs=15,
+    callbacks=callbacks,
+)
