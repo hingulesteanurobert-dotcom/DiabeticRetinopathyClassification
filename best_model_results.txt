@@ -1,0 +1,402 @@
+# Libraries
+
+import os
+import cv2
+import glob
+import torch
+import random
+import shutil
+import warnings
+import itertools
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+from PIL import Image
+from tqdm import tqdm
+from sklearn.metrics import classification_report, confusion_matrix
+from torchvision.datasets import ImageFolder
+from torchvision import transforms
+from torch.utils.data import DataLoader
+from timm.data.mixup import Mixup
+from timm.layers import trunc_normal_
+from torch.amp import autocast, GradScaler
+from torch.optim.swa_utils import AveragedModel, SWALR
+import timm
+import torch.nn as nn
+import torch.optim as optim
+from tensorflow.keras.applications import EfficientNetB3
+import torch.nn.functional as F
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Activation, Dense, Flatten, BatchNormalization, Conv2D, MaxPool2D
+from tensorflow.keras.optimizers import Adam, RMSprop
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.metrics import categorical_crossentropy
+from sklearn.metrics import cohen_kappa_score, roc_curve, auc
+from sklearn.preprocessing import label_binarize
+
+# Images inputs
+
+input_paths = {
+    'train': '/kaggle/input/eyepacs-aptos-messidor-diabetic-retinopathy/dr_unified_v2/dr_unified_v2/train',
+    'test': '/kaggle/input/eyepacs-aptos-messidor-diabetic-retinopathy/dr_unified_v2/dr_unified_v2/test',
+    'val': '/kaggle/input/eyepacs-aptos-messidor-diabetic-retinopathy/dr_unified_v2/dr_unified_v2/val'
+}
+
+output_paths = {
+    'train': '/kaggle/working/preprocessed_train',
+    'test': '/kaggle/working/preprocessed_test',
+    'val': '/kaggle/working/preprocessed_val'
+}
+
+target_counts = {
+    "train": 7000,
+    "val": 1500,
+    "test": 1500
+}
+
+# Image preprocessing process
+
+def crop_resize_enhance(img, size=512):
+    try:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        coords = cv2.findNonZero(mask)
+        if coords is None:
+            return None
+        x, y, w, h = cv2.boundingRect(coords)
+        crop = img[y:y+h, x:x+w]
+        if crop.size == 0:
+            return None
+        resized = cv2.resize(crop, (size, size), interpolation=cv2.INTER_CUBIC)
+        g = resized[:, :, 1]
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        resized[:, :, 1] = clahe.apply(g)
+        return cv2.GaussianBlur(resized, (5, 5), sigmaX=1.5, sigmaY=1.5)
+    except:
+        return None
+
+# Augmentation + Echilibration
+
+class AugmentTorch:
+    def __init__(self, img_size):
+        self.transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(15),
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
+            transforms.Resize((img_size, img_size)),
+        ])
+
+    def __call__(self, img_bgr):
+        rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        pil = Image.fromarray(rgb)
+        out = self.transform(pil)
+        return cv2.cvtColor(np.array(out), cv2.COLOR_RGB2BGR)
+
+def count_per_class(folder):
+    return {cls: len(os.listdir(os.path.join(folder, cls))) for cls in os.listdir(folder) if os.path.isdir(os.path.join(folder, cls))}
+
+def rebalance_data(src, dst, target, aug=True):
+    os.makedirs(dst, exist_ok=True)
+    for cls in os.listdir(src):
+        src_cls = os.path.join(src, cls)
+        dst_cls = os.path.join(dst, cls)
+        os.makedirs(dst_cls, exist_ok=True)
+        images = os.listdir(src_cls)
+        total = len(images)
+        keep = images if total <= target else random.sample(images, target)
+        for name in keep:
+            p = os.path.join(src_cls, name)
+            img = cv2.imread(p)
+            if img is not None:
+                proc = crop_resize_enhance(img)
+                if proc is not None:
+                    cv2.imwrite(os.path.join(dst_cls, name), proc)
+        if aug and total < target:
+            extra = target - total
+            i = 0
+            while i < extra:
+                name = random.choice(images)
+                p = os.path.join(src_cls, name)
+                img = cv2.imread(p)
+                if img is not None:
+                    try:
+                        aug_img = augmenter(img)
+                        aug_img = crop_resize_enhance(aug_img)
+                        if aug_img is not None:
+                            new_name = f"aug_{i}_{name}"
+                            cv2.imwrite(os.path.join(dst_cls, new_name), aug_img)
+                            i += 1
+                    except:
+                        continue
+
+augmenter = AugmentTorch(512)
+
+for split in ["train", "val", "test"]:
+    rebalance_data(input_paths[split], output_paths[split], target_counts[split], aug=True)
+
+print("\nDistributie finala:")
+for name, path in output_paths.items():
+    print(f"{name.upper()}: {count_per_class(path)}")
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# CNN Model
+
+class Retino(nn.Module):
+    def __init__(self, classes=5):
+        super().__init__()
+        net = timm.create_model("efficientnet_b3", pretrained=True)
+        feat_dim = net.classifier.in_features
+        net.classifier = nn.Identity()
+        self.features = net
+        self.head = nn.Sequential(
+            nn.Linear(feat_dim, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(512, classes)
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        return self.head(x)
+
+# Data loading + Other transformations
+
+mix_fn = Mixup(mixup_alpha=0.2, cutmix_alpha=0.2, prob=0.8)
+
+train_tf = transforms.Compose([
+    transforms.Resize((512, 512)),
+    transforms.RandomResizedCrop(512, scale=(0.9, 1.0)),
+    transforms.RandomRotation(10),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
+])
+
+test_tf = transforms.Compose([
+    transforms.Resize((512, 512)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
+])
+
+train_ds = ImageFolder(output_paths['train'], transform=train_tf)
+val_ds = ImageFolder(output_paths['val'], transform=test_tf)
+test_ds = ImageFolder(output_paths['test'], transform=test_tf)
+
+train_dl = DataLoader(train_ds, batch_size=16, shuffle=True, num_workers=2, pin_memory=True, drop_last=True)
+val_dl = DataLoader(val_ds, batch_size=32, shuffle=False, num_workers=2, pin_memory=True, drop_last=True)
+test_dl = DataLoader(test_ds, batch_size=32, shuffle=False, num_workers=2, pin_memory=True, drop_last=True)
+
+# Hyperparameters + Training process
+
+net = Retino(classes=5).to(device)
+avg_model = AveragedModel(net)
+
+loss_fn = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
+opt = optim.AdamW(net.parameters(), lr=3e-4, weight_decay=1e-6)
+sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=20, eta_min=1e-7)
+swa_sched = SWALR(opt, swa_lr=8e-5)
+scaler = GradScaler()
+
+max_norm = 1.0
+log_loss_tr, log_loss_val = [], []
+log_acc_tr, log_acc_val = [], []
+
+def train_loop(model, loader_tr, loader_val, epochs=10):
+    best_loss = float('inf')
+    stop_counter = 0
+    stop_limit = 3
+
+    for ep in range(epochs):
+        print(f"\nEpoch {ep+1}/{epochs}")
+        model.train()
+        loss_ep, hits, total = 0.0, 0, 0
+        loop = tqdm(loader_tr, desc="Train", leave=False)
+
+        for imgs, lbls in loop:
+            imgs, lbls = imgs.to(device), lbls.to(device)
+            if mix_fn is not None:
+                imgs, lbls = mix_fn(imgs, lbls)
+            if lbls.ndim == 3:
+                lbls = lbls.squeeze(1)
+
+            with autocast("cuda"):
+                preds = model(imgs)
+                loss = loss_fn(preds, lbls.argmax(1) if lbls.ndim > 1 else lbls)
+
+            opt.zero_grad()
+            scaler.scale(loss).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            scaler.step(opt)
+            scaler.update()
+
+            loss_ep += loss.item() * imgs.size(0)
+            _, out = torch.max(preds, 1)
+            y_true = lbls.argmax(1) if lbls.ndim > 1 else lbls
+            hits += (out == y_true).sum().item()
+            total += lbls.size(0)
+            loop.set_postfix(loss=loss.item())
+
+        acc_tr = hits / total
+        loss_tr = loss_ep / total
+        log_loss_tr.append(loss_tr)
+        log_acc_tr.append(acc_tr)
+
+        model.eval()
+        loss_val, hits_val, total_val = 0.0, 0, 0
+        with torch.no_grad():
+            for imgs, lbls in loader_val:
+                imgs, lbls = imgs.to(device), lbls.to(device)
+                if lbls.ndim == 3:
+                    lbls = lbls.squeeze(1)
+
+                with autocast("cuda"):
+                    preds = model(imgs)
+                    loss = loss_fn(preds, lbls.argmax(1) if lbls.ndim > 1 else lbls)
+
+                loss_val += loss.item() * imgs.size(0)
+                _, out = torch.max(preds, 1)
+                y_true = lbls.argmax(1) if lbls.ndim > 1 else lbls
+                hits_val += (out == y_true).sum().item()
+                total_val += lbls.size(0)
+
+        acc_val = hits_val / total_val
+        loss_val = loss_val / total_val
+        log_loss_val.append(loss_val)
+        log_acc_val.append(acc_val)
+
+        print(f"Train Loss: {loss_tr:.4f} | Acc: {acc_tr:.4f}")
+        print(f"Val   Loss: {loss_val:.4f} | Acc: {acc_val:.4f}")
+
+        sched.step()
+        avg_model.update_parameters(model)
+        if ep > 6:
+            swa_sched.step()
+
+        if loss_val < best_loss:
+            best_loss = loss_val
+            torch.save(model.state_dict(), "best_model.pth")
+            stop_counter = 0
+        else:
+            stop_counter += 1
+            if stop_counter >= stop_limit:
+                print("Early stopping triggered.")
+                break
+
+        torch.cuda.empty_cache()
+
+train_loop(net, train_dl, val_dl, epochs=10)
+
+# Confusion Matrix 
+
+def test_metrics(model, loader):
+    model.eval()
+    preds_all, labels_all = [], []
+
+    with torch.no_grad():
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            out = model(x)
+            _, preds = torch.max(out, 1)
+            preds_all.extend(preds.cpu().numpy())
+            labels_all.extend(y.cpu().numpy())
+
+    print("Raport clasificare:")
+    print(classification_report(labels_all, preds_all, target_names=[
+        "No DR", "Mild", "Moderate", "Severe", "Proliferative DR"
+    ]))
+
+    matrix = confusion_matrix(labels_all, preds_all)
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(matrix, annot=True, fmt="d", cmap="Blues",
+                xticklabels=["No DR", "Mild", "Moderate", "Severe", "Proliferative DR"],
+                yticklabels=["No DR", "Mild", "Moderate", "Severe", "Proliferative DR"])
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.title("Confusion Matrix")
+    plt.show()
+
+test_metrics(net, test_dl)
+
+# Real/Predicted labels
+
+def show_grid(model, loader, num_cls=5, per_cls=5):
+    model.eval()
+    shown = {i: [] for i in range(num_cls)}
+
+    with torch.no_grad():
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            out = model(x)
+            _, preds = torch.max(out, 1)
+            for img, yt, yp in zip(x, y, preds):
+                if len(shown[yt.item()]) < per_cls:
+                    shown[yt.item()].append((img.cpu(), yt.item(), yp.item()))
+            if all(len(shown[i]) == per_cls for i in range(num_cls)):
+                break
+
+    fig, axs = plt.subplots(num_cls, per_cls, figsize=(per_cls * 2.5, num_cls * 2.5))
+    fig.suptitle("Predictii vs Etichete", fontsize=16)
+
+    for i in range(num_cls):
+        for j in range(per_cls):
+            ax = axs[i, j]
+            img, y_true, y_pred = shown[i][j]
+            arr = img.permute(1, 2, 0).numpy()
+            arr = (arr - arr.min()) / (arr.max() - arr.min())
+            ax.imshow(arr)
+            ax.axis("off")
+            ax.set_title(f"T:{y_true} / P:{y_pred}", fontsize=9)
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.93)
+    plt.show()
+
+show_grid(net, val_dl)
+
+# Kappa Score + ROC curves
+
+def kappa_roc(model, loader, num_cls=5):
+    model.eval()
+    y_true, y_pred, y_prob = [], [], []
+
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device)
+            out = model(x)
+            probs = torch.softmax(out, dim=1).cpu().numpy()
+            preds = np.argmax(probs, axis=1)
+            y_true.extend(y.numpy())
+            y_pred.extend(preds)
+            y_prob.extend(probs)
+
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    y_prob = np.array(y_prob)
+
+    k_score = cohen_kappa_score(y_true, y_pred)
+    print(f"Kappa Score: {k_score:.4f}")
+
+    y_true_bin = label_binarize(y_true, classes=np.arange(num_cls))
+    fpr, tpr, aucs = {}, {}, {}
+    for i in range(num_cls):
+        fpr[i], tpr[i], _ = roc_curve(y_true_bin[:, i], y_prob[:, i])
+        aucs[i] = auc(fpr[i], tpr[i])
+
+    plt.figure(figsize=(10, 8))
+    for i in range(num_cls):
+        plt.plot(fpr[i], tpr[i], label=f'Class {i} (AUC = {aucs[i]:.2f})')
+
+    plt.plot([0, 1], [0, 1], 'k--', label='Random')
+    plt.title("ROC per Clasa")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.legend(loc="lower right")
+    plt.grid()
+    plt.show()
+
+kappa_roc(net, val_dl)
