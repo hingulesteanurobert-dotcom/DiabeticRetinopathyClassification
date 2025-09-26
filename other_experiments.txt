@@ -1,5 +1,4 @@
-#Impartirea datelor in train, val, test pentru primul dataset (toate experimentele)
-
+# Train/Test/Validation process
 import os
 import shutil
 from sklearn.model_selection import train_test_split
@@ -62,9 +61,9 @@ print("Train:", train_counts)
 print("Test:", test_counts)
 print("Validation:", val_counts)
 
-#Tehnici de preprocesare
+# Preprocessing techniques
 
-    #Functia de crop(folosita in majoritatea experimentelor)
+    #Crop function(used in many experiments)
 
 def crop_visible_area(image, thresh=7):
     if image.ndim == 2:
@@ -83,7 +82,7 @@ def crop_visible_area(image, thresh=7):
         return result
 
    
-    # Crop + gaussian blur(experimentul 1 si 3 dataset 1)
+    # Crop + gaussian blur
     
 def circular_focus(image, sigma=30):
     image = crop_visible_area(image)
@@ -101,7 +100,7 @@ def circular_focus(image, sigma=30):
     return result
         
 
-    #CLAHE(experimentul 3 dataset 1)
+    #CLAHE
     
     def enhance_clahe(image):
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -111,10 +110,9 @@ def circular_focus(image, sigma=30):
     final = cv2.merge((l_clahe, a, b))
     return cv2.cvtColor(final, cv2.COLOR_LAB2BGR)
 
-# Tehnici de echilibrare a datelor
+# Data echilibration
 
-    #Undersampling (experimentul 1 dataset 1)
-
+    #Undersampling 
 import os
 import shutil
 import random
@@ -159,9 +157,9 @@ for subset_dir, balanced_subset_dir, target_count in [
 print("Echilibrare completa.")
 
 
-#AUGMENTARE      
+# Augmentations      
 
-    #ALBUMENTATIONS(experimentul 2 dataset 1)
+    #ALBUMENTATIONS
 
 albumentations_aug = A.Compose([
     A.HorizontalFlip(p=0.5),
@@ -173,9 +171,6 @@ albumentations_aug = A.Compose([
     A.Resize(IMG_SIZE, IMG_SIZE)
 ])
 
-    #TorchiVision deja definit in Anexa A.
-
-#Restrangerea claselor - functie
 
 label_map = {
     0: 0,  # No DR
@@ -198,11 +193,11 @@ class RemappedImageFolder(ImageFolder):
 
 
 
-#Incarcarea datelor 
+# Data loading
 
     #ImageDataGenerator(experimentul 1 dataset 1)
 
-#Variabilele difera de la caz la caz
+# Variables
 
 BATCH_SIZE = 32
 EPOCHS = 40
@@ -263,9 +258,9 @@ test_dir = "/kaggle/working/preprocessed_test"
 val_dir = "/kaggle/working/preprocessed_val"     
 train_gen, valid_gen, test_gen = img_generator(train_dir, test_dir, val_dir)
 
-#Modele de CNN (experimentele 1 si 2 dataset 1)
+# CNN Models
 
-    #ResNet50 cu diferite variatii
+    # ResNet50 with a lot of variations
 
 def create_model(input_shape, n_out):
     input_tensor = Input(shape=input_shape)
@@ -305,7 +300,7 @@ outputs = Dense(NUM_CLASSES, activation='softmax')(x)
 model = Model(inputs=base_model.input, outputs=outputs)
     
 
-    #Antrenare ResNet50 (experimentul 2 dataset 1, exp 1 similar)
+    # ResNet50 training
 
 model = create_model(input_shape=(HEIGHT, WIDTH, CANAL), n_out=N_CLASSES)
 
@@ -332,4 +327,5 @@ history1 = model.fit(
     validation_data=valid_gen,
     epochs=15,
     callbacks=callbacks,
+
 )
