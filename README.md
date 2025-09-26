@@ -5,6 +5,8 @@ Diabetic retinopathy is a chronic progressive eye disease associated with a grou
 
 Based on the results obtained, a graphical user interface was developed to run the project. It allows the selection of one or more fundus images and subsequently performs the classification according to the severity level of the disease (0 - No DR, 1 - Mild, 2 - Moderate, 3 - Severe, 4 - Proliferative).
 
+At the core of this project were convolutional neural networks, along with specialized architectures such as ResNet and EfficientNet. In addition, image preprocessing was carried out through augmentation and undersampling. Augmentation was performed using techniques such as rotations, flips, contrast adjustments, and colorization methods.
+
 Three datasets from the Kaggle platform were analyzed, and an optimal set of results was obtained for each of them.
 
 <img width="836" height="691" alt="image" src="https://github.com/user-attachments/assets/ae80300f-2fa3-48bc-9bca-0ae6f5430408" />
@@ -26,6 +28,12 @@ Three datasets from the Kaggle platform were analyzed, and an optimal set of res
 
 <img width="555" height="486" alt="image" src="https://github.com/user-attachments/assets/4cdffab5-912f-4fed-8fb0-c7a184d3c1b8" />
 <img width="538" height="234" alt="image" src="https://github.com/user-attachments/assets/e61baf33-d0e4-4c5e-9301-80c83fb4e6c1" />
+
+In the demo video below, the classification of images with diabetic retinopathy can be clearly observed. The graphical interface is implemented in Romanian, but the images are labeled according to the severity level of the disease. It can be seen that the model is properly trained and achieves a high proportion of correct classifications. Two trained models were loaded into the interface: one for color images and another for grayscale images.
+
+
+
+https://github.com/user-attachments/assets/bb0a9c31-0513-4060-9380-fb6dda94fd8a
 
 
 
